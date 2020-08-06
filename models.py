@@ -51,7 +51,11 @@ class VAE(nn.Module):
                  decoder: nn.Module,
                  z_priors: List[D.Distribution]):
         super().__init__()
-        self.encoders = encoders
+
+        self.encoders = nn.ModuleList(encoders)
+        # register encoders as part of model
+        # for ei, encoder in enumerate(encoders):
+        #     setattr(self, f'encoder_{ei}', encoder)
         self.decoder = decoder
         self.z_priors = z_priors
 
@@ -104,8 +108,42 @@ class VAE(nn.Module):
         x_loss = self.recon_loss_fn(x_recon, x)
         return z_loss * wx + x_loss * wz
 
+
+class MIVAE(VAE):
+    def calc_mi_loss(self, 
+                      pz_given_xs: List[D.Distribution], 
+                      p_prior: float=0.5) -> torch.Tensor:
+        "pass to get mutual info loss to be used as regularizer on top of standard vae loss"
+        num_zs = len(pz_given_xs)
+        # decide if using p(z) or p(z|x) per z in latent space
+        use_posteriors = torch.rand(num_zs).lt(p_prior)
+        z_samples = [None] * num_zs
+        for zi in range(num_zs):
+            if use_posteriors[zi]:
+                z_samples[zi] = pz_given_xs[zi].rsample()
+            else:
+                z_samples[zi] = self.z_priors[zi].rsample(
+                        sample_shape=pz_given_xs[zi].loc.shape)
+        # generate p(x|z)
+        x_recon = self.decode(z_samples)
+        # re-infer
+        pz_given_x_recons = self.encode(x_recon)
+
+        # calc mi loss for things not drawn from prior
+        losses = [None] * num_zs
+        zi = 0
+        for zi in range(num_zs):
+            pz_given_x_recon = pz_given_x_recons[zi]
+            pz_given_x = pz_given_xs[zi]
+            losses[zi] = D.kl.kl_divergence(pz_given_x_recon, pz_given_x)
+            # don't include zs drawn from prior
+            losses[zi] = losses[zi].mean() * use_posteriors[zi]
+        loss = torch.mean(torch.stack(losses))
+        return loss
+
+
 if __name__ == '__main__':
-    from torch.optim import Adam
+    from torch.optim import Adam, Adamax
 
     from data import dataset, data_loader
 
@@ -122,12 +160,12 @@ if __name__ == '__main__':
     encoder1 = MLP(DIM_X, DIM_ZS[1] * 2, [1024, 1024])
     decoder = MLP(dim_z, DIM_X, [128])
 
-    vae = VAE(
+    vae = MIVAE(
             encoders=[encoder0, encoder1],
             decoder=decoder,
             z_priors=Z_PRIORS)
 
-    optimizer = Adam(params=vae.parameters(), lr=1e-3)
+    optimizer = Adamax(params=vae.parameters(), lr=1e-3)
 
     step = 0
     for xx, yy in data_loader:
@@ -136,9 +174,12 @@ if __name__ == '__main__':
 
         xx = xx.to(device)
         x_recon, pz_given_xs = vae(xx, return_pz=True)
+        nelbo = vae.calc_nelbo(xx, x_recon, pz_given_xs)
+        mi_loss = vae.calc_mi_loss(pz_given_xs)
+        # TODO: adversarial net can be used to keep mi_loss recon on natural manifold of data points
 
-        nelbo = vae.calc_nelbo(xx, x_recon, pz_given_xs, wz=0.)
-        print(f'loss step {step}: {nelbo.item():.2f}')
+        if step % 100 == 0:
+            print(f'loss step {step}: {nelbo.item():.2f}')
         nelbo.backward()
         optimizer.step()
         step += 1
