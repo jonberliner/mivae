@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from torch import distributions as D
 from torch.nn import functional as F
+import numpy as np
+from matplotlib import pyplot as plt
 
 class MLP(nn.Module):
     """standard fully connected mlp"""
@@ -106,7 +108,7 @@ class VAE(nn.Module):
     def calc_nelbo(self, x, x_recon, pz_given_xs, wx=1., wz=1.):
         z_loss = self.calc_z_loss(pz_given_xs)
         x_loss = self.recon_loss_fn(x_recon, x)
-        return z_loss * wx + x_loss * wz
+        return z_loss * wz + x_loss * wx
 
 
 class MIVAE(VAE):
@@ -141,6 +143,22 @@ class MIVAE(VAE):
         loss = torch.mean(torch.stack(losses))
         return loss
 
+def viz_recon(axes, imgs, recons):
+    # fig, axes = plt.subplots(8, 8 * 2)
+    i, j = 0, 0
+    mats = []
+    for img, recon in zip(*[imgs, recons]):
+        axes[i, j].clear()
+        axes[i, j+8].clear()
+
+        axes[i, j].matshow(img, vmin=0., vmax=1.)
+        axes[i, j+8].matshow(recon, vmin=0., vmax=1.)
+        i = (i + 1) % 8
+        j = (j + 1) % 8
+    plt.pause(0.01)
+    plt.draw()
+    plt.show()
+
 
 if __name__ == '__main__':
     from torch.optim import Adam, Adamax
@@ -151,35 +169,57 @@ if __name__ == '__main__':
 
     DIM_X = 784
 
-    DIM_ZS = [128, 128]
+    DIM_ZS = [31, 37, 17, 13]
     num_z = len(DIM_ZS)
     dim_z = sum(DIM_ZS)
     Z_PRIORS = [D.Normal(torch.tensor(0.), torch.tensor(1.))] * num_z
 
-    encoder0 = MLP(DIM_X, DIM_ZS[0] * 2, [1024, 1024])
-    encoder1 = MLP(DIM_X, DIM_ZS[1] * 2, [1024, 1024])
-    decoder = MLP(dim_z, DIM_X, [128])
+    encoder0 = MLP(DIM_X, DIM_ZS[0] * 2, [64])
+    encoder1 = MLP(DIM_X, DIM_ZS[1] * 2, [64])
+    encoder2 = MLP(DIM_X, DIM_ZS[2] * 2, [64])
+    encoder3 = MLP(DIM_X, DIM_ZS[3] * 2, [64])
+    decoder = MLP(dim_z, DIM_X, [512])
 
     vae = MIVAE(
-            encoders=[encoder0, encoder1],
+            encoders=[encoder0, encoder1, encoder2, encoder3],
             decoder=decoder,
             z_priors=Z_PRIORS)
 
     optimizer = Adamax(params=vae.parameters(), lr=1e-3)
 
     step = 0
+
+    fig, axes = plt.subplots(1, 2)
+    mats = [None] * 2
+    mats[0] = axes[0].matshow(np.zeros([28, 28]), cmap='bone', vmin=0., vmax=1.)
+    mats[1] = axes[1].matshow(np.zeros([28, 28]), cmap='bone', vmin=0., vmax=1.)
+
     for xx, yy in data_loader:
         vae.train()
         optimizer.zero_grad()
 
         xx = xx.to(device)
-        x_recon, pz_given_xs = vae(xx, return_pz=True)
-        nelbo = vae.calc_nelbo(xx, x_recon, pz_given_xs)
+        x_recons, pz_given_xs = vae(xx, return_pz=True)
+        nelbo = vae.calc_nelbo(xx, x_recons, pz_given_xs, wz=0.1)
         mi_loss = vae.calc_mi_loss(pz_given_xs)
+        
+        loss = nelbo + mi_loss * 0.1
         # TODO: adversarial net can be used to keep mi_loss recon on natural manifold of data points
 
         if step % 100 == 0:
             print(f'loss step {step}: {nelbo.item():.2f}')
-        nelbo.backward()
+
+            with torch.no_grad():
+                plt.ion()
+                x = xx[0].numpy().reshape(28, 28)
+                recon = x_recons[0].sigmoid().numpy().reshape(28, 28)
+                mats[0].set_data(x)
+                mats[1].set_data(recon)
+                plt.pause(0.01)
+                plt.draw()
+                plt.show()
+                plt.ioff()
+
+        loss.backward()
         optimizer.step()
         step += 1

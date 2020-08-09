@@ -19,4 +19,4 @@ data_transforms = {
     ])}
 
 dataset = FashionMNIST('./FashionMNIST', download=True, transform=data_transforms['train'])
-data_loader = DataLoader(dataset)
+data_loader = DataLoader(dataset, batch_size=32)
