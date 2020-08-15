@@ -143,22 +143,6 @@ class MIVAE(VAE):
         loss = torch.mean(torch.stack(losses))
         return loss
 
-def viz_recon(axes, imgs, recons):
-    # fig, axes = plt.subplots(8, 8 * 2)
-    i, j = 0, 0
-    mats = []
-    for img, recon in zip(*[imgs, recons]):
-        axes[i, j].clear()
-        axes[i, j+8].clear()
-
-        axes[i, j].matshow(img, vmin=0., vmax=1.)
-        axes[i, j+8].matshow(recon, vmin=0., vmax=1.)
-        i = (i + 1) % 8
-        j = (j + 1) % 8
-    plt.pause(0.01)
-    plt.draw()
-    plt.show()
-
 
 if __name__ == '__main__':
     from torch.optim import Adam, Adamax
